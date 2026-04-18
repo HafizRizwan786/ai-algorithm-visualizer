@@ -1,26 +1,44 @@
 import tkinter as tk
 from tkinter import ttk
 import threading
+import math
+import time
 
 from models.puzzle import generate_puzzle, get_blank, GOAL
 from algorithms.bfs   import bfs
 from algorithms.dfs   import dfs
 from algorithms.astar import astar
 
-# Refined, modern dark theme palette
+# ── CIPHER AI palette ─────────────────────────────────────────────────────────
 C = {
-    'bg':    '#1e1e2e',
-    'panel': '#27293d',
-    'tile':  '#32325d',
-    'blank': '#141420',
-    'text':  '#f8f8f2',
-    'red':   '#ff5d73',
-    'green': '#00f2c3',
-    'gold':  '#ffb86c',
-    'dim':   '#8b8b8b',
-    'shadow':'#0a0a14'
+    'bg':       '#020b0f',
+    'surface':  '#061520',
+    'card':     '#071a26',
+    'card_h':   '#0c2438',
+    'border':   '#0e2a3f',
+    'cyan':     '#00d4ff',
+    'amber':    '#f0a500',
+    'text':     '#c0e8f8',
+    'muted':    '#1a4a60',
+    'dim':      '#0a1e2c',
+    'red':      '#ff5d73',
+    'green':    '#00f2c3',
+    'shadow':   '#010608',
+    'tile':     '#071e30',
+    'tile_sol': '#031a0e',
+    'blank':    '#020d14',
 }
-TILE = 90
+
+TILE = 118          # large tile → fills the left half of the screen
+FONT = 'Courier New'
+
+ALGO_COLOR = {
+    'BFS':   '#3b82f6',
+    'DFS':   '#8b5cf6',
+    'A* h1': '#f0a500',
+    'A* h2': '#00f2c3',
+}
+
 
 class PuzzleApp:
     def __init__(self, root):
@@ -38,136 +56,307 @@ class PuzzleApp:
 
         self._build_ui()
         self._draw_board()
+        self._clock_tick()
+        self._pulse_tick()
 
-    # ── BUILD UI ─────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Helpers
+    # ─────────────────────────────────────────────────────────────────────────
+    def _clock_tick(self):
+        try:
+            self._clock_lbl.config(text=time.strftime('%H:%M:%S'))
+            self.root.after(1000, self._clock_tick)
+        except tk.TclError:
+            pass
+
+    def _pulse_tick(self, t=0):
+        try:
+            v = (math.sin(t * 0.12) + 1) / 2
+            r = 3 + v * 3.5
+            cx, cy = 5.5, 6.5
+            self._pc.coords(self._prg, cx-r, cy-r, cx+r, cy+r)
+            self.root.after(50, lambda: self._pulse_tick(t + 1))
+        except tk.TclError:
+            pass
+
+    def _section(self, parent, label):
+        f = tk.Frame(parent, bg=C['bg'])
+        f.pack(fill=tk.X, pady=(10, 4))
+        tk.Label(f, text=label, font=(FONT, 8, 'bold'),
+                 fg=C['cyan'], bg=C['bg']).pack(side=tk.LEFT)
+        tk.Frame(f, bg=C['border'], height=1).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), pady=6)
+
+    def _draw_corners(self, canvas, W, H, color):
+        s, p, lw = 20, 7, 2
+        segs = [
+            [(p, p+s), (p, p),         (p+s, p)],
+            [(W-p-s, p), (W-p, p),     (W-p, p+s)],
+            [(p, H-p-s), (p, H-p),     (p+s, H-p)],
+            [(W-p-s, H-p), (W-p, H-p), (W-p, H-p-s)],
+        ]
+        for pts in segs:
+            flat = [v for xy in pts for v in xy]
+            canvas.create_line(*flat, fill=color, width=lw, joinstyle='miter')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  BUILD UI
+    # ─────────────────────────────────────────────────────────────────────────
     def _build_ui(self):
-        wrap = tk.Frame(self.root, bg=C['bg'])
-        wrap.pack(padx=25, pady=25, fill=tk.BOTH, expand=True)
+        root_pad = tk.Frame(self.root, bg=C['bg'], padx=22, pady=16)
+        root_pad.pack(fill=tk.BOTH, expand=True)
 
-        # ── Title row with BACK BUTTON ────────────────────────────────────
-        title_row = tk.Frame(wrap, bg=C['bg'])
-        title_row.pack(fill=tk.X, pady=(0, 18))
+        # ── Full-width top HUD bar ────────────────────────────────────────
+        self._build_hud(root_pad)
 
-        tk.Button(
-            title_row, text="⬅ Back to Menu",
-            command=self._back,
-            font=("Helvetica", 10, "bold"),
-            fg=C['text'], bg='#3d3f54',
-            activebackground='#4a4c66', activeforeground='white',
-            relief=tk.FLAT, padx=12, pady=6, cursor='hand2'
-        ).pack(side=tk.LEFT)
+        # ── Cyan underline under HUD ──────────────────────────────────────
+        ul = tk.Canvas(root_pad, height=2, bg=C['bg'], highlightthickness=0)
+        ul.pack(fill=tk.X, pady=(0, 14))
+        ul.bind('<Configure>',
+                lambda e: (ul.delete('all'),
+                           ul.create_line(0, 1, e.width, 1,
+                                          fill=C['cyan'], width=2)))
 
-        tk.Label(
-            title_row, text="  15-PUZZLE SOLVER",
-            font=("Helvetica", 18, "bold"),
-            fg=C['text'], bg=C['bg']
-        ).pack(side=tk.LEFT)
+        # ── Upper section: board LEFT  |  gap  |  controls RIGHT ─────────
+        upper = tk.Frame(root_pad, bg=C['bg'])
+        upper.pack(fill=tk.BOTH, expand=True)
 
-        body = tk.Frame(wrap, bg=C['bg'])
-        body.pack(fill=tk.BOTH, expand=True)
+        self._build_board_col(upper)    # side=LEFT
+        self._build_right_col(upper)    # side=RIGHT  (packed before spacer)
+        # Transparent middle gap
+        tk.Frame(upper, bg=C['bg']).pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # ── Board canvas ──────────────────────────────────────────────────
-        bf = tk.Frame(body, bg=C['bg'])
-        bf.pack(side=tk.LEFT, padx=(0, 25))
+        # ── Divider ───────────────────────────────────────────────────────
+        tk.Frame(root_pad, bg=C['border'], height=1).pack(
+            fill=tk.X, pady=(14, 10))
 
-        sz = 4 * TILE + 8
-        self.canvas = tk.Canvas(bf, width=sz, height=sz,
-                                bg=C['blank'], highlightthickness=0)
-        self.canvas.pack()
-        self.canvas.bind("<Button-1>", self._on_click)
+        # ── Full-width history table at bottom ────────────────────────────
+        self._build_history(root_pad)
+        self._build_hud_bottom(root_pad)
 
-        # ── Right panel ───────────────────────────────────────────────────
-        pnl = tk.Frame(body, bg=C['panel'], padx=20, pady=20)
-        pnl.pack(side=tk.LEFT, fill=tk.Y)
+    # ── Full-width top HUD ────────────────────────────────────────────────────
+    def _build_hud(self, parent):
+        f = tk.Frame(parent, bg=C['bg'])
+        f.pack(fill=tk.X, pady=(0, 0))
 
-        tk.Label(pnl, text="ALGORITHM",
-                 font=("Helvetica", 10, "bold"),
-                 fg=C['dim'], bg=C['panel']).pack(anchor='w', pady=(0, 5))
+        # Back
+        tk.Button(f, text='← MENU',
+                  command=self._back,
+                  font=(FONT, 9, 'bold'),
+                  fg=C['muted'], bg=C['card'],
+                  activeforeground=C['text'],
+                  activebackground=C['border'],
+                  relief=tk.FLAT,
+                  highlightthickness=1,
+                  highlightbackground=C['border'],
+                  padx=10, pady=4,
+                  cursor='hand2').pack(side=tk.LEFT)
 
-        for algo in ["BFS", "DFS", "A* h1", "A* h2"]:
-            tk.Radiobutton(pnl, text=algo, variable=self.algo_var, value=algo,
-                           font=("Helvetica", 10), fg=C['text'],
-                           bg=C['panel'], selectcolor=C['bg'],
-                           activebackground=C['panel'], activeforeground=C['text']).pack(anchor='w', pady=2)
+        # Logo + pulse
+        tk.Label(f, text='CIPHER',
+                 font=(FONT, 11, 'bold'),
+                 fg=C['cyan'], bg=C['bg']).pack(side=tk.LEFT, padx=(14, 0))
 
-        tk.Frame(pnl, height=15, bg=C['panel']).pack()
+        self._pc = tk.Canvas(f, width=76, height=14,
+                             bg=C['bg'], highlightthickness=0)
+        self._pc.pack(side=tk.LEFT, padx=(10, 0))
+        self._pc.create_oval(2, 3, 9, 10, fill=C['cyan'], outline='')
+        self._prg = self._pc.create_oval(0, 1, 11, 12,
+                                         outline=C['cyan'], width=1)
+        self._pc.create_text(15, 7, text='ONLINE',
+                             font=(FONT, 8), fill=C['muted'], anchor='w')
 
-        for txt, cmd, color, hover in [
-            ("🔀  New Puzzle", self._new_puzzle, '#3d3f54', '#4a4c66'),
-            ("▶   Solve",      self._solve,      C['green'],  '#1ae5bc'),
-            ("⏹   Stop",       self._stop,       C['red'],    '#ff788a')
+        # Centred page title
+        tk.Label(f, text='15 - P U Z Z L E   S O L V E R',
+                 font=(FONT, 14, 'bold'),
+                 fg=C['text'], bg=C['bg']).pack(side=tk.LEFT, expand=True)
+
+        # Clock
+        self._clock_lbl = tk.Label(f, text='00:00:00',
+                                   font=(FONT, 8),
+                                   fg=C['muted'], bg=C['bg'])
+        self._clock_lbl.pack(side=tk.RIGHT)
+
+    # ── LEFT column: big puzzle board ─────────────────────────────────────────
+    def _build_board_col(self, parent):
+        col = tk.Frame(parent, bg=C['bg'])
+        col.pack(side=tk.LEFT, anchor='n')
+
+        # Section label
+        sh = tk.Frame(col, bg=C['bg'])
+        sh.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(sh, text='PUZZLE BOARD',
+                 font=(FONT, 8, 'bold'),
+                 fg=C['cyan'], bg=C['bg']).pack(side=tk.LEFT)
+        tk.Frame(sh, bg=C['border'], height=1).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0), pady=6)
+
+        sz = 4 * TILE   # e.g. 472
+
+        # Three-layer decorative border
+        outer = tk.Frame(col, bg=C['amber'], padx=3, pady=3)
+        outer.pack()
+        mid   = tk.Frame(outer, bg=C['border'], padx=1, pady=1)
+        mid.pack()
+        inner = tk.Frame(mid, bg=C['surface'], padx=10, pady=10)
+        inner.pack()
+
+        # Decoration canvas with HUD corners
+        deco = tk.Canvas(inner, width=sz + 22, height=sz + 22,
+                         bg=C['surface'], highlightthickness=0)
+        deco.pack()
+        self._draw_corners(deco, sz + 22, sz + 22, C['cyan'])
+
+        # Actual board canvas
+        self.canvas = tk.Canvas(deco, width=sz, height=sz,
+                                bg=C['blank'], highlightthickness=0,
+                                cursor='hand2')
+        deco.create_window(11, 11, anchor='nw', window=self.canvas)
+        self.canvas.bind('<Button-1>', self._on_click)
+
+        # Status label under board
+        self._board_lbl = tk.Label(col,
+                                   text='CLICK TILE ADJACENT TO BLANK TO MOVE',
+                                   font=(FONT, 8),
+                                   fg=C['muted'], bg=C['bg'])
+        self._board_lbl.pack(pady=(10, 0))
+
+    # ── RIGHT column: controls flush to the right edge ────────────────────────
+    def _build_right_col(self, parent):
+        col = tk.Frame(parent, bg=C['bg'], width=230)
+        col.pack(side=tk.RIGHT, fill=tk.Y, anchor='n')
+        col.pack_propagate(False)
+
+        # Algorithm selector
+        self._section(col, 'SELECT ALGORITHM')
+
+        radio_frame = tk.Frame(col, bg=C['card'],
+                               highlightthickness=1,
+                               highlightbackground=C['border'])
+        radio_frame.pack(fill=tk.X, pady=(0, 6))
+
+        for algo in ['BFS', 'DFS', 'A* h1', 'A* h2']:
+            accent = ALGO_COLOR[algo]
+            row = tk.Frame(radio_frame, bg=C['card'], padx=10, pady=7)
+            row.pack(fill=tk.X)
+            tk.Frame(row, bg=accent, width=3).pack(
+                side=tk.LEFT, fill=tk.Y, padx=(0, 8))
+            tk.Radiobutton(row, text=algo,
+                           variable=self.algo_var, value=algo,
+                           font=(FONT, 10),
+                           fg=accent, bg=C['card'],
+                           selectcolor=C['surface'],
+                           activebackground=C['card'],
+                           activeforeground=accent,
+                           cursor='hand2').pack(side=tk.LEFT)
+
+        # Action buttons
+        self._section(col, 'CONTROLS')
+
+        for txt, cmd, accent in [
+            ('🔀  NEW PUZZLE',  self._new_puzzle, C['muted']),
+            ('▶   SOLVE',       self._solve,      C['green']),
+            ('⏹   STOP',        self._stop,       C['red']),
+            ('▶▶  COMPARE ALL', self._compare_all, C['amber']),
         ]:
-            tk.Button(pnl, text=txt, command=cmd,
-                      font=("Helvetica", 10, "bold"),
-                      fg='#1e1e2e' if color == C['green'] else 'white', 
-                      bg=color, activebackground=hover, activeforeground='white', 
-                      relief=tk.FLAT, padx=8, pady=6, width=16,
-                      cursor='hand2').pack(pady=4)
+            tk.Button(col, text=txt, command=cmd,
+                      font=(FONT, 9, 'bold'),
+                      fg=accent, bg=C['card'],
+                      activeforeground=C['text'],
+                      activebackground=C['card_h'],
+                      relief=tk.FLAT,
+                      highlightthickness=1,
+                      highlightbackground=accent,
+                      padx=12, pady=7,
+                      cursor='hand2', anchor='w').pack(fill=tk.X, pady=2)
 
-        tk.Frame(pnl, height=15, bg=C['panel']).pack()
+        # Live stats
+        self._section(col, 'LAST RUN STATS')
 
-        tk.Label(pnl, text="CURRENT STATS",
-                 font=("Helvetica", 10, "bold"),
-                 fg=C['dim'], bg=C['panel']).pack(anchor='w', pady=(0, 5))
+        stats_frame = tk.Frame(col, bg=C['card'],
+                               highlightthickness=1,
+                               highlightbackground=C['border'])
+        stats_frame.pack(fill=tk.X)
 
         self.sv = {}
-        for k in ["Status", "Nodes", "Steps", "Time"]:
-            r = tk.Frame(pnl, bg=C['panel'])
-            r.pack(fill=tk.X, pady=2)
-            tk.Label(r, text=f"{k}:", font=("Helvetica", 9),
-                     fg=C['gold'], bg=C['panel'],
-                     width=7, anchor='w').pack(side=tk.LEFT)
-            v = tk.StringVar(value="-")
-            tk.Label(r, textvariable=v, font=("Consolas", 10),
-                     fg=C['text'], bg=C['panel']).pack(side=tk.LEFT)
-            self.sv[k] = v
+        for label, key, color in [
+            ('STATUS', 'Status', C['text']),
+            ('NODES',  'Nodes',  '#3b82f6'),
+            ('STEPS',  'Steps',  C['green']),
+            ('TIME',   'Time',   C['amber']),
+        ]:
+            r = tk.Frame(stats_frame, bg=C['card'], padx=10, pady=6)
+            r.pack(fill=tk.X)
+            tk.Label(r, text=label + ':',
+                     font=(FONT, 8, 'bold'),
+                     fg=C['muted'], bg=C['card'],
+                     width=8, anchor='w').pack(side=tk.LEFT)
+            v = tk.StringVar(value='-')
+            tk.Label(r, textvariable=v,
+                     font=(FONT, 9, 'bold'),
+                     fg=color, bg=C['card']).pack(side=tk.LEFT)
+            self.sv[key] = v
 
-        # ── Comparison table ──────────────────────────────────────────────
-        table_container = tk.Frame(wrap, bg=C['bg'])
-        table_container.pack(fill=tk.BOTH, expand=True, pady=(20, 0))
+    # ── Full-width history table at the bottom ────────────────────────────────
+    def _build_history(self, parent):
+        hdr = tk.Frame(parent, bg=C['bg'])
+        hdr.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(hdr, text='ALGORITHM RUN HISTORY',
+                 font=(FONT, 10, 'bold'),
+                 fg=C['cyan'], bg=C['bg']).pack(side=tk.LEFT)
 
-        tk.Label(table_container, text="ALGORITHM RUN HISTORY",
-                 font=("Helvetica", 10, "bold"),
-                 fg=C['dim'], bg=C['bg']).pack(anchor='w', pady=(0, 5))
-
-        # Setup custom modern style for the treeview
         style = ttk.Style()
         style.theme_use('clam')
-        style.configure("Treeview",
-                        background=C['panel'], foreground=C['text'],
-                        fieldbackground=C['panel'], rowheight=28, borderwidth=0,
-                        font=("Consolas", 9))
-        style.configure("Treeview.Heading",
-                        background='#222436', foreground=C['gold'],
-                        font=("Helvetica", 9, "bold"), borderwidth=0)
-        style.map("Treeview", background=[('selected', '#3d3f54')])
+        style.configure('CIPHER.Treeview',
+                        background=C['card'],
+                        foreground=C['text'],
+                        fieldbackground=C['card'],
+                        rowheight=28, borderwidth=0,
+                        font=(FONT, 9))
+        style.configure('CIPHER.Treeview.Heading',
+                        background=C['surface'],
+                        foreground=C['amber'],
+                        font=(FONT, 9, 'bold'),
+                        relief='flat')
+        style.map('CIPHER.Treeview',
+                  background=[('selected', '#0c2438')],
+                  foreground=[('selected', C['text'])])
 
-        # Wrap in an inner frame to hold both the treeview and the scrollbar
-        tv_inner = tk.Frame(table_container, bg=C['panel'])
-        tv_inner.pack(fill=tk.BOTH, expand=True)
+        cols = ('Algorithm', 'Nodes', 'Steps', 'Time (s)', 'Result')
 
-        cols = ("Algorithm", "Nodes", "Steps", "Time (s)", "Result")
-        
-        scroll_y = ttk.Scrollbar(tv_inner, orient=tk.VERTICAL)
-        self.tree = ttk.Treeview(tv_inner, columns=cols, show='headings', height=5, yscrollcommand=scroll_y.set)
+        tv_wrap = tk.Frame(parent, bg=C['card'],
+                           highlightthickness=1,
+                           highlightbackground=C['border'])
+        tv_wrap.pack(fill=tk.BOTH, expand=True)
+
+        scroll_y = ttk.Scrollbar(tv_wrap, orient=tk.VERTICAL)
+        self.tree = ttk.Treeview(tv_wrap, columns=cols,
+                                 show='headings', height=5,
+                                 style='CIPHER.Treeview',
+                                 yscrollcommand=scroll_y.set)
         scroll_y.config(command=self.tree.yview)
 
-        for c, w in zip(cols, [110, 100, 80, 90, 90]):
-            self.tree.heading(c, text=c)
-            self.tree.column(c, width=w, anchor='center', minwidth=w)
-        
+        for col, w in zip(cols, [140, 130, 110, 120, 120]):
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=w, anchor='center', minwidth=w)
+
+        for algo, color in ALGO_COLOR.items():
+            self.tree.tag_configure(algo, foreground=color)
+
         scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        tk.Button(wrap,
-                  text="▶▶ Run All Algorithms & Compare",
-                  command=self._compare_all,
-                  font=("Helvetica", 10, "bold"),
-                  fg='#1e1e2e', bg=C['gold'], 
-                  activebackground='#ffca8a', activeforeground='#1e1e2e',
-                  relief=tk.FLAT, padx=10, pady=8, cursor='hand2').pack(pady=12)
+    def _build_hud_bottom(self, parent):
+        f = tk.Frame(parent, bg=C['bg'])
+        f.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(f, text='CIPHER AI  ·  SEARCH ENGINE MODULE',
+                 font=(FONT, 8), fg=C['muted'], bg=C['bg']).pack(side=tk.LEFT)
+        tk.Label(f, text='BUILD 2025.3',
+                 font=(FONT, 8), fg=C['muted'], bg=C['bg']).pack(side=tk.RIGHT)
 
-    # ── DRAW ──────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    #  DRAW BOARD  — logic unchanged
+    # ─────────────────────────────────────────────────────────────────────────
     def _draw_board(self):
         self.canvas.delete("all")
         solved = (self.state == GOAL)
@@ -175,25 +364,38 @@ class PuzzleApp:
             r, c = divmod(i, 4)
             x0 = c * TILE + 4;  y0 = r * TILE + 4
             x1 = x0 + TILE - 4; y1 = y0 + TILE - 4
-            
+
             color = (C['blank'] if val == 0 else
-                     '#00c49e'  if solved   else
+                     C['tile_sol'] if solved else
                      C['tile'])
-            
-            # Subtle realistic drop shadow for tiles
+
             if val != 0:
-                self.canvas.create_rectangle(x0+2, y0+2, x1+2, y1+2,
+                self.canvas.create_rectangle(x0+3, y0+3, x1+3, y1+3,
                                              fill=C['shadow'], outline='')
 
             self.canvas.create_rectangle(x0, y0, x1, y1,
-                                         fill=color, outline='#45476a', width=1)
+                                         fill=color,
+                                         outline=C['border'], width=1)
             if val:
-                self.canvas.create_text((x0+x1)//2, (y0+y1)//2,
-                                        text=str(val),
-                                        font=("Helvetica", 24, "bold"),
-                                        fill='#1e1e2e' if solved else C['text'])
+                self.canvas.create_oval(x1-12, y0+6, x1-6, y0+12,
+                                        fill=C['green'] if solved else C['cyan'],
+                                        outline='')
+                self.canvas.create_text(
+                    (x0+x1)//2, (y0+y1)//2,
+                    text=str(val),
+                    font=(FONT, 26, 'bold'),
+                    fill=C['green'] if solved else C['text'])
 
-    # ── EVENTS ────────────────────────────────────────────────────────────────
+        if solved:
+            self._board_lbl.config(
+                text='SOLVED  ✔  PUZZLE COMPLETE', fg=C['green'])
+        else:
+            self._board_lbl.config(
+                text='CLICK TILE ADJACENT TO BLANK TO MOVE', fg=C['muted'])
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  ALL EVENTS & SOLVER LOGIC — unchanged from original
+    # ─────────────────────────────────────────────────────────────────────────
     def _on_click(self, event):
         if self.solving: return
         col = event.x // TILE
@@ -235,7 +437,6 @@ class PuzzleApp:
                 else:
                     path, nodes, t = astar(snap, heuristic='h2')
 
-                # ✅ Updates UI & appends single runs to the history log
                 def update():
                     if path:
                         steps = len(path) - 1
@@ -244,23 +445,23 @@ class PuzzleApp:
                         self.sv["Nodes"].set(str(nodes))
                         self.sv["Steps"].set(str(steps))
                         self.sv["Time"].set(f"{t:.3f}s")
-                        
-                        # Add record to table
-                        self.tree.insert("", tk.END, values=(algo, nodes, steps, f"{t:.3f}", "✔ Found"))
-                        
+                        self.tree.insert("", tk.END,
+                                         values=(algo, nodes, steps,
+                                                 f"{t:.3f}", "✔ Found"),
+                                         tags=(algo,))
                         self.anim_step = 0
                         self._animate()
                     else:
                         self.sv["Status"].set("✘ Limit Reached")
                         self.sv["Nodes"].set(str(nodes))
                         self.sv["Steps"].set("-")
-                        
-                        # Add record to table
-                        self.tree.insert("", tk.END, values=(algo, nodes, "N/A", f"{t:.3f}", "✘ Limit"))
-                    
-                    self.tree.yview_moveto(1) # Scroll to bottom
+                        self.tree.insert("", tk.END,
+                                         values=(algo, nodes, "N/A",
+                                                 f"{t:.3f}", "✘ Limit"),
+                                         tags=(algo,))
+                    self.tree.yview_moveto(1)
                     self.solving = False
-                    
+
                 self.root.after(0, update)
             except Exception as e:
                 self.root.after(0, lambda: self.sv["Status"].set(f"Error: {e}"))
@@ -284,10 +485,8 @@ class PuzzleApp:
     def _compare_all(self):
         if self.solving: return
         self._stop()
-
         self.sv["Status"].set("Running all…")
         self.root.update()
-
         snap = self.state
 
         def run():
@@ -303,12 +502,11 @@ class PuzzleApp:
                 result = "✔ Found" if path else "✘ Limit"
                 results.append((name, str(nodes), steps, f"{elapsed:.3f}", result))
 
-            # ✅ Inserts rows consecutively WITHOUT deleting previous histories
             def insert_rows():
                 for vals in results:
-                    self.tree.insert("", tk.END, values=vals)
+                    self.tree.insert("", tk.END, values=vals, tags=(vals[0],))
                 self.sv["Status"].set("✔ Done")
-                self.tree.yview_moveto(1) # Auto-scroll to the newest entries at the bottom
+                self.tree.yview_moveto(1)
 
             self.root.after(0, insert_rows)
 
