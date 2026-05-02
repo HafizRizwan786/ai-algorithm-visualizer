@@ -1,4 +1,4 @@
-# main.py  ← Run this file to start the project
+# main.py
 from gui.menu import start_menu
 
 if __name__ == "__main__":
